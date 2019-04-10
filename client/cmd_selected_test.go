@@ -240,6 +240,34 @@ func TestClient_Fetch(t *testing.T) {
 	}
 }
 
+func TestClient_Fetch_ClosedState(t *testing.T) {
+	c, s := newTestClient(t)
+	defer s.Close()
+
+	setClientState(c, imap.AuthenticatedState, nil)
+
+	seqset, _ := imap.ParseSeqSet("2:3")
+	fields := []imap.FetchItem{imap.FetchUid, imap.FetchItem("BODY[]")}
+
+	done := make(chan error, 1)
+	messages := make(chan *imap.Message, 2)
+	go func() {
+		done <- c.Fetch(seqset, fields, messages)
+	}()
+
+	_, more := <- messages
+
+	if more {
+		t.Fatalf("Messages channel has more messages, but it must be closed with no messages sent")
+	}
+
+	err := <- done
+
+	if err != ErrNoMailboxSelected {
+		t.Fatalf("Expected error to be IMAP Client ErrNoMailboxSelected")
+	}
+}
+
 func TestClient_Fetch_Partial(t *testing.T) {
 	c, s := newTestClient(t)
 	defer s.Close()
@@ -276,6 +304,39 @@ func TestClient_Fetch_Partial(t *testing.T) {
 	if body, _ := ioutil.ReadAll(msg.GetBody(section)); string(body) != "I love pot" {
 		t.Errorf("Message has bad body: %q", body)
 	}
+}
+
+func TestClient_Fetch_part(t *testing.T) {
+	c, s := newTestClient(t)
+	defer s.Close()
+
+	setClientState(c, imap.SelectedState, nil)
+
+	seqset, _ := imap.ParseSeqSet("1")
+	fields := []imap.FetchItem{imap.FetchItem("BODY.PEEK[1]")}
+
+	done := make(chan error, 1)
+	messages := make(chan *imap.Message, 1)
+	go func() {
+		done <- c.Fetch(seqset, fields, messages)
+	}()
+
+	tag, cmd := s.ScanCmd()
+	if cmd != "FETCH 1 (BODY.PEEK[1])" {
+		t.Fatalf("client sent command %v, want %v", cmd, "FETCH 1 (BODY.PEEK[1])")
+	}
+
+	s.WriteString("* 1 FETCH (BODY[1] {3}\r\n")
+	s.WriteString("Hey")
+	s.WriteString(")\r\n")
+
+	s.WriteString(tag + " OK FETCH completed\r\n")
+
+	if err := <-done; err != nil {
+		t.Fatalf("c.Fetch() = %v", err)
+	}
+
+	<-messages
 }
 
 func TestClient_Fetch_Uid(t *testing.T) {
